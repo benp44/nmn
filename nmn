@@ -85,6 +85,11 @@ class InterfaceMonitor:
                 known_hosts = found_hosts.copy()
                 first_run = False
 
+                for _ in range(5):
+                    sleep(1)
+                    if self._continue_processing is False:
+                        break
+
             except Exception as Error:
                 logger.warning(str(Error))
                 raise
@@ -121,7 +126,11 @@ class Application:
                     self._monitors.pop(known_interface_name, None)
 
             known_interfaces = found_interfaces.copy()
-            sleep(5)
+            
+            for _ in range(5):
+                sleep(1)
+                if self._continue_running is False:
+                    break
 
     def wind_down(self):
 
