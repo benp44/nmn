@@ -10,8 +10,10 @@ from sys import stdout
 from signal import signal, SIGINT, SIGTERM, SIG_IGN
 from os import setpgrp, mkdir, path
 
+
 def preexec_function():
     setpgrp()
+
 
 class InterfaceMonitor:
 
@@ -86,7 +88,7 @@ class InterfaceMonitor:
             except Exception as Error:
                 logger.warning(str(Error))
                 raise
-        
+
         self._complete = True
 
 
@@ -96,9 +98,9 @@ class Application:
 
         self._continue_running = True
         self._monitors = {}
-    
+
     def monitor_networks(self):
-        
+
         known_interfaces = {}
 
         while self._continue_running:
@@ -126,7 +128,7 @@ class Application:
         for monitor in self._monitors.values():
             monitor.stop_scanning()
 
-    def list_interfaces(self):   
+    def list_interfaces(self):
 
         interfaces = {}
 
@@ -165,7 +167,7 @@ class Application:
         logger.info("Signal caught. Exiting...")
 
         self._continue_running = False
-        
+
     def setup_signal_handling(self):
 
         signal(SIGINT, self.signal_handler)
