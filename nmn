@@ -158,7 +158,7 @@ class Application:
 
         logger.add(logging_directory + "/debug_{time}.log", rotation="5 MB")
         logger.add(logging_directory + "/error_{time}.log", level="ERROR", rotation="5 MB")
-        logger.add(stdout, colorize=True, format="<green>{time}</green> <level>{message}</level>", level="DEBUG")
+        logger.add(stdout, colorize=True, format="<green>{time}</green> <level>{message}</level>", level="INFO")
 
         logger.info("Starting nmn...")
 
