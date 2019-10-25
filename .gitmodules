@@ -1,0 +1,3 @@
+[submodule "notify-send-wrapper"]
+	path = notify-send-wrapper
+	url = https://github.com/vlevit/notify-send.sh.git
