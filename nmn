@@ -1,0 +1,182 @@
+#!/usr/bin/python3
+
+# Network Monitor and Notifier (NMN)
+
+from threading import Thread
+from subprocess import check_output, PIPE
+from loguru import logger
+from time import sleep
+from sys import stdout
+from signal import signal, SIGINT, SIGTERM, SIG_IGN
+from os import setpgrp, mkdir, path
+
+def preexec_function():
+    setpgrp()
+
+class InterfaceMonitor:
+
+    def __init__(self, interface_name, ip_address_range):
+
+        self._interface_name = interface_name
+        self._ip_address_range = ip_address_range
+        self._continue_processing = True
+        self._complete = False
+        self._thread = Thread(target=self._thread_method)
+
+    def start_scanning(self):
+
+        logger.info("Starting monitor on " + self._interface_name + "...")
+        self._thread.start()
+
+    def stop_scanning(self):
+
+        logger.info("Stopping monitor on " + self._interface_name + "...")
+        self._continue_processing = False
+        self._thread.join()
+
+    def is_running(self):
+
+        return self._complete is False
+
+    def _thread_method(self):
+
+        first_run = True
+        known_hosts = {}
+
+        while self._continue_processing:
+            try:
+                found_hosts = {}
+
+                logger.debug("Running scan on " + self._interface_name + " using " + self._ip_address_range)
+                output = check_output(["nmap", "-sn", self._ip_address_range, "-oG", "-"], stdin=PIPE, preexec_fn=preexec_function)
+                output = output.decode("UTF-8")
+                logger.debug(output)
+                lines = output.split("\n")
+
+                for line in lines:
+                    if line.startswith("Host:"):
+                        parts = line.split()
+                        if len(parts) == 5:
+                            address = parts[1]
+                            hostname = parts[2].replace("(", "").replace(")", "")
+                            found_hosts[address] = hostname
+
+                if first_run is False:
+                    for address in found_hosts.keys():
+                        if address not in known_hosts.keys():
+                            name = address
+                            if found_hosts[address] != "":
+                                name = found_hosts[address] + " (" + address + ")"
+
+                            logger.info(name + " was added to network on " + self._interface_name)
+                            check_output(["notify-send", "--expire-time=5000", "--app-name=nmn", "--icon=vcs-added", name + " joined the network on " + self._interface_name])
+
+                    for address in known_hosts.keys():
+                        if address not in found_hosts.keys():
+                            name = address
+                            if known_hosts[address] != "":
+                                name = known_hosts[address] + " (" + address + ")"
+
+                            logger.info(name + " was removed from network on " + self._interface_name)
+                            check_output(["notify-send", "--expire-time=5000", "--app-name=nmn", "--icon=vcs-removed", name + " left the network on " + self._interface_name])
+
+                known_hosts = found_hosts.copy()
+                first_run = False
+
+            except Exception as Error:
+                logger.warning(str(Error))
+                raise
+        
+        self._complete = True
+
+
+class Application:
+
+    def __init__(self):
+
+        self._continue_running = True
+        self._monitors = {}
+    
+    def monitor_networks(self):
+        
+        known_interfaces = {}
+
+        while self._continue_running:
+
+            found_interfaces = self.list_interfaces()
+
+            for found_interface_name in found_interfaces.keys():
+                if found_interface_name not in known_interfaces.keys():
+                    ip_address_range = found_interfaces[found_interface_name]
+                    new_monitor = InterfaceMonitor(found_interface_name, ip_address_range)
+                    new_monitor.start_scanning()
+                    self._monitors[found_interface_name] = new_monitor
+
+            for known_interface_name in known_interfaces.keys():
+                if known_interface_name not in found_interfaces.keys():
+                    monitor = self._monitors[known_interface_name]
+                    monitor.stop_scanning()
+                    self._monitors.pop(known_interface_name, None)
+
+            known_interfaces = found_interfaces.copy()
+            sleep(5)
+
+    def wind_down(self):
+
+        for monitor in self._monitors.values():
+            monitor.stop_scanning()
+
+    def list_interfaces(self):   
+
+        interfaces = {}
+
+        logger.debug("Listing interfaces...")
+        output = check_output(["ip", "-br", "address", "show"], stdin=PIPE, preexec_fn=preexec_function)
+        output = output.decode("UTF-8")
+        logger.debug(output)
+        lines = output.split("\n")
+
+        for line in lines:
+            parts = line.split()
+            if len(parts) >= 3:
+                if parts[1] == "UP":
+                    name = parts[0]
+                    ip_address_range = parts[2]
+                    interfaces[name] = ip_address_range
+
+        return interfaces
+
+    def setup_logging(self):
+
+        logger.remove()
+        logging_directory = "/tmp/nmn"
+
+        if not path.exists(logging_directory):
+            mkdir(logging_directory)
+
+        logger.add(logging_directory + "/debug_{time}.log", rotation="5 MB")
+        logger.add(logging_directory + "/error_{time}.log", level="ERROR", rotation="5 MB")
+        logger.add(stdout, colorize=True, format="<green>{time}</green> <level>{message}</level>", level="DEBUG")
+
+        logger.info("Starting nmn...")
+
+    def signal_handler(self, signal, frame):
+
+        logger.info("Signal caught. Exiting...")
+
+        self._continue_running = False
+        
+    def setup_signal_handling(self):
+
+        signal(SIGINT, self.signal_handler)
+        signal(SIGTERM, self.signal_handler)
+
+
+app = Application()
+
+app.setup_logging()
+app.setup_signal_handling()
+
+app.monitor_networks()
+
+app.wind_down()
