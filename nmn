@@ -2,31 +2,37 @@
 
 # Network Monitor and Notifier (NMN)
 
-from threading import Thread
-from subprocess import check_output, PIPE
+from argparse import ArgumentParser
 from loguru import logger
-from time import sleep
-from sys import stdout
-from signal import signal, SIGINT, SIGTERM, SIG_IGN
 from os import setpgrp, mkdir, path
+from signal import signal, SIGINT, SIGTERM, SIG_IGN
+from subprocess import call, check_output, PIPE
+from sys import stdout, argv
+from threading import Thread
+from time import sleep
+
+# Some global configuration params
 
 DATA_DIRECTORY = "/tmp/nmn"
-NOTIFICATION_DURATION = 6
-INTERVAL_QUERY_INTERFACES = 30
-INTERVAL_QUERY_FOR_DEVICES = 10
+NOTIFICATION_DURATION_S = 6
+INTERVAL_QUERY_INTERFACES_S = 30
+INTERVAL_QUERY_FOR_DEVICES_S = 10
+SHOW_NOTIFICATIONS = True
 
 
 def preexec_function():
 
+    # Prevent signals hitting sub-processes
     setpgrp()
 
 
 def get_notification_command():
 
+    # Locate the notification tool from the submodule
     return path.dirname(path.realpath(__file__)) + "/notify-send-wrapper/notify-send.sh"
 
 
-class InterfaceMonitor:
+class NetworkDeviceMonitor:
 
     def __init__(self, interface_name, ip_address_range):
 
@@ -66,8 +72,9 @@ class InterfaceMonitor:
 
     def show_notification(self, address, message, icon):
 
-        notification_thread = Thread(target=self._show_and_hide_notification, args=(address, message, icon))
-        notification_thread.start()
+        if SHOW_NOTIFICATIONS is True:
+            notification_thread = Thread(target=self._show_and_hide_notification, args=(address, message, icon))
+            notification_thread.start()
 
     def make_filename_safe(self, input_string):
         return "".join([c for c in input_string if c.isalpha() or c.isdigit() or c == ' ']).rstrip()
@@ -83,7 +90,7 @@ class InterfaceMonitor:
         logger.debug("notify-send output: " + output)
 
         if output.isdigit():
-            sleep(NOTIFICATION_DURATION)
+            sleep(NOTIFICATION_DURATION_S)
             logger.debug("Killing notification with id: " + output)
             check_output([notify_command, "--close=" + output])
 
@@ -94,46 +101,53 @@ class InterfaceMonitor:
 
         while self._continue_processing:
             try:
-                found_hosts = {}
+                interfaces = NetworkInterfaceMonitor.list_active_interfaces()
+                if self._interface_name in interfaces.keys():
 
-                logger.debug("Running scan on " + self._interface_name + " using " + self._ip_address_range)
-                output = check_output(["nmap", "-sn", self._ip_address_range, "-oG", "-"], stdin=PIPE, preexec_fn=preexec_function)
-                output = output.decode("UTF-8")
-                logger.debug(output)
-                lines = output.split("\n")
+                    found_hosts = {}
 
-                for line in lines:
-                    if line.startswith("Host:"):
-                        parts = line.split()
-                        if len(parts) == 5:
-                            address = parts[1]
-                            hostname = parts[2].replace("(", "").replace(")", "")
-                            found_hosts[address] = hostname
+                    logger.debug("Running device scan on " + self._interface_name + " using " + self._ip_address_range)
 
-                if first_run is False:
-                    for address in found_hosts.keys():
-                        if address not in known_hosts.keys():
-                            name = address
-                            if found_hosts[address] != "":
-                                name = found_hosts[address]
+                    output = check_output(["nmap", "-sn", self._ip_address_range, "-oG", "-"], stdin=PIPE, preexec_fn=preexec_function)
+                    output = output.decode("UTF-8")
+                    logger.debug(output)
+                    lines = output.split("\n")
 
-                            self._on_device_added(name, address)
+                    for line in lines:
+                        if line.startswith("Host:"):
+                            parts = line.split()
+                            if len(parts) == 5:
+                                address = parts[1]
+                                hostname = parts[2].replace("(", "").replace(")", "")
+                                found_hosts[address] = hostname
 
-                    for address in known_hosts.keys():
-                        if address not in found_hosts.keys():
-                            name = address
-                            if known_hosts[address] != "":
-                                name = known_hosts[address]
+                    if first_run is False:
+                        for address in found_hosts.keys():
+                            if address not in known_hosts.keys():
+                                name = address
+                                if found_hosts[address] != "":
+                                    name = found_hosts[address]
 
-                            self._on_device_removed(name, address)
+                                self._on_device_added(name, address)
 
-                known_hosts = found_hosts.copy()
+                        for address in known_hosts.keys():
+                            if address not in found_hosts.keys():
+                                name = address
+                                if known_hosts[address] != "":
+                                    name = known_hosts[address]
 
-                if first_run is True:
-                    logger.info("Initialisation run complete for " + self._interface_name)
-                    first_run = False
+                                self._on_device_removed(name, address)
 
-                for _ in range(INTERVAL_QUERY_FOR_DEVICES):
+                    known_hosts = found_hosts.copy()
+
+                    if first_run is True:
+                        logger.info("Initialisation run complete for " + self._interface_name)
+                        first_run = False
+
+                else:
+                    logger.info("Interface no longer active: " + self._interface_name)
+
+                for _ in range(INTERVAL_QUERY_FOR_DEVICES_S):
                     sleep(1)
                     if self._continue_processing is False:
                         break
@@ -145,7 +159,7 @@ class InterfaceMonitor:
         self._complete = True
 
 
-class Application:
+class NetworkInterfaceMonitor:
 
     def __init__(self):
 
@@ -154,46 +168,52 @@ class Application:
 
     def monitor_networks(self):
 
-        known_interfaces = {}
-
         while self._continue_running:
 
-            found_interfaces = self.list_interfaces()
+            logger.debug("Scanning for interface changes...")
+
+            found_interfaces = self.list_active_interfaces()
+            stopped_interfaces = []
 
             for found_interface_name in found_interfaces.keys():
-                if found_interface_name not in known_interfaces.keys():
+                if found_interface_name not in self._monitors.keys():
                     ip_address_range = found_interfaces[found_interface_name]
-                    new_monitor = InterfaceMonitor(found_interface_name, ip_address_range)
+                    new_monitor = NetworkDeviceMonitor(found_interface_name, ip_address_range)
                     new_monitor.start_scanning()
                     self._monitors[found_interface_name] = new_monitor
 
-            for known_interface_name in known_interfaces.keys():
-                if known_interface_name not in found_interfaces.keys():
-                    monitor = self._monitors[known_interface_name]
+            for currently_monitored_interface_name in self._monitors.keys():
+                if currently_monitored_interface_name not in found_interfaces.keys():
+                    monitor = self._monitors[currently_monitored_interface_name]
                     monitor.stop_scanning()
-                    self._monitors.pop(known_interface_name, None)
+                    stopped_interfaces.append(currently_monitored_interface_name)
 
-            known_interfaces = found_interfaces.copy()
+            for stopped_interface in stopped_interfaces:
+                self._monitors.pop(stopped_interface, None)
 
-            for _ in range(INTERVAL_QUERY_INTERFACES):
+            for _ in range(INTERVAL_QUERY_INTERFACES_S):
                 sleep(1)
                 if self._continue_running is False:
                     break
 
-    def wind_down(self):
+    def stop(self):
+
+        self._continue_running = False
 
         for monitor in self._monitors.values():
             monitor.stop_scanning()
 
-    def list_interfaces(self):
-
-        interfaces = {}
+    @staticmethod
+    def list_active_interfaces():
 
         logger.debug("Listing interfaces...")
+
+        interfaces = {}
         output = check_output(["ip", "-br", "address", "show"], stdin=PIPE, preexec_fn=preexec_function)
         output = output.decode("UTF-8")
-        logger.debug(output)
         lines = output.split("\n")
+
+        logger.debug(output)
 
         for line in lines:
             parts = line.split()
@@ -204,6 +224,43 @@ class Application:
                     interfaces[name] = ip_address_range
 
         return interfaces
+
+
+class NmnApplication:
+
+    def __init__(self):
+
+        self.network_monitor = NetworkInterfaceMonitor()
+
+    def start(self):
+
+        logger.info("Starting nmn...")
+
+        self.network_monitor.monitor_networks()
+
+        logger.info("Exiting nmn...")
+
+    def check_application_arguments(self, args):
+
+        if "--help" in args:
+            self.show_help()
+        elif "--disable-notifications" in args:
+            SHOW_NOTIFICATIONS = False
+        elif len(args) > 0:
+            print("Unknown argument(s) provided")
+
+    def check_dependencies(self):
+
+        if SHOW_NOTIFICATIONS is True:
+            self.check_for_notify_command()
+
+        self.check_for_nmap()
+        self.check_for_ip()
+
+    def setup_signal_handling(self):
+
+        signal(SIGINT, self.signal_handler)
+        signal(SIGTERM, self.signal_handler)
 
     def setup_logging(self):
 
@@ -216,30 +273,51 @@ class Application:
         logger.add(DATA_DIRECTORY + "/error_{time}.log", level="ERROR", rotation="5 MB")
         logger.add(stdout, colorize=True, format="<green>{time}</green> <level>{message}</level>", level="INFO")
 
-        logger.info("Starting nmn...")
+    def show_help(self):
+
+        print("Network monitor and notifier (nmn)")
+        print("")
+        print("Options:")
+        print("--disable-notifications : Disable desktop notifications (notify-send)")
+        print("--help                  : Show this message")
+
+        exit(0)
+
+    def check_for_notify_command(self):
+
+        if path.exists(get_notification_command()) is False:
+
+            print("notify-send.sh was not found. Please clone submodules by running `git submodule update --init`")
+            exit(1)
+
+    def check_for_nmap(self):
+
+        try:
+            call(["nmap", "--version"], stdout=PIPE, stderr=PIPE)
+        except OSError as e:
+            print("Error: `nmap` is not installed.")
+            exit(1)
+
+    def check_for_ip(self):
+
+        try:
+            call(["ip", "-help"], stdout=PIPE, stderr=PIPE)
+        except OSError as e:
+            print("Error: the `ip` command is not installed.")
+            exit(1)
 
     def signal_handler(self, signal, frame):
 
-        logger.info("Signal caught. Exiting...")
+        logger.info("Signal caught. Stopping...")
 
-        self._continue_running = False
-
-    def setup_signal_handling(self):
-
-        signal(SIGINT, self.signal_handler)
-        signal(SIGTERM, self.signal_handler)
+        self.network_monitor.stop()
 
 
-if path.exists(get_notification_command()) is False:
+app = NmnApplication()
 
-    print("notify-send.sh was not found. Please clone submodules by running `git submodule update --init`")
-    exit(1)
-
-app = Application()
-
+app.check_application_arguments(argv[1:])
+app.check_dependencies()
 app.setup_logging()
 app.setup_signal_handling()
 
-app.monitor_networks()
-
-app.wind_down()
+app.start()
