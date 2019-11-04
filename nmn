@@ -10,9 +10,20 @@ from sys import stdout
 from signal import signal, SIGINT, SIGTERM, SIG_IGN
 from os import setpgrp, mkdir, path
 
+DATA_DIRECTORY = "/tmp/nmn"
+NOTIFICATION_DURATION = 6
+INTERVAL_QUERY_INTERFACES = 30
+INTERVAL_QUERY_FOR_DEVICES = 10
+
 
 def preexec_function():
+
     setpgrp()
+
+
+def get_notification_command():
+
+    return path.dirname(path.realpath(__file__)) + "/notify-send-wrapper/notify-send.sh"
 
 
 class InterfaceMonitor:
@@ -23,7 +34,8 @@ class InterfaceMonitor:
         self._ip_address_range = ip_address_range
         self._continue_processing = True
         self._complete = False
-        self._thread = Thread(target=self._thread_method)
+        self._thread = Thread(target=self._scan_interface_for_changes)
+        self._current_notifications = []
 
     def start_scanning(self):
 
@@ -40,7 +52,42 @@ class InterfaceMonitor:
 
         return self._complete is False
 
-    def _thread_method(self):
+    def _on_device_added(self, name, address):
+
+        message = name + " joined the network on " + self._interface_name + " (" + address + ")"
+        logger.info(message)
+        self.show_notification(address, message, "vcs-added")
+
+    def _on_device_removed(self, name, address):
+
+        message = name + " left the network on " + self._interface_name + " (" + address + ")"
+        logger.info(message)
+        self.show_notification(address, message, "vcs-removed")
+
+    def show_notification(self, address, message, icon):
+
+        notification_thread = Thread(target=self._show_and_hide_notification, args=(address, message, icon))
+        notification_thread.start()
+
+    def make_filename_safe(self, input_string):
+        return "".join([c for c in input_string if c.isalpha() or c.isdigit() or c == ' ']).rstrip()
+
+    def _show_and_hide_notification(self, address, message, icon):
+
+        notify_command = get_notification_command()
+        replace_file = DATA_DIRECTORY + "/" + self.make_filename_safe(address)
+
+        output = check_output([notify_command, "--print-id", "--app-name=nmn", "--icon=" + icon, "--replace-file=" + replace_file, message])
+        output = output.decode("UTF-8").strip()
+
+        logger.debug("notify-send output: " + output)
+
+        if output.isdigit():
+            sleep(NOTIFICATION_DURATION)
+            logger.debug("Killing notification with id: " + output)
+            check_output([notify_command, "--close=" + output])
+
+    def _scan_interface_for_changes(self):
 
         first_run = True
         known_hosts = {}
@@ -68,24 +115,25 @@ class InterfaceMonitor:
                         if address not in known_hosts.keys():
                             name = address
                             if found_hosts[address] != "":
-                                name = found_hosts[address] + " (" + address + ")"
+                                name = found_hosts[address]
 
-                            logger.info(name + " was added to network on " + self._interface_name)
-                            check_output(["notify-send", "--expire-time=5000", "--app-name=nmn", "--icon=vcs-added", name + " joined the network on " + self._interface_name])
+                            self._on_device_added(name, address)
 
                     for address in known_hosts.keys():
                         if address not in found_hosts.keys():
                             name = address
                             if known_hosts[address] != "":
-                                name = known_hosts[address] + " (" + address + ")"
+                                name = known_hosts[address]
 
-                            logger.info(name + " was removed from network on " + self._interface_name)
-                            check_output(["notify-send", "--expire-time=5000", "--app-name=nmn", "--icon=vcs-removed", name + " left the network on " + self._interface_name])
+                            self._on_device_removed(name, address)
 
                 known_hosts = found_hosts.copy()
-                first_run = False
 
-                for _ in range(5):
+                if first_run is True:
+                    logger.info("Initialisation run complete for " + self._interface_name)
+                    first_run = False
+
+                for _ in range(INTERVAL_QUERY_FOR_DEVICES):
                     sleep(1)
                     if self._continue_processing is False:
                         break
@@ -126,8 +174,8 @@ class Application:
                     self._monitors.pop(known_interface_name, None)
 
             known_interfaces = found_interfaces.copy()
-            
-            for _ in range(5):
+
+            for _ in range(INTERVAL_QUERY_INTERFACES):
                 sleep(1)
                 if self._continue_running is False:
                     break
@@ -160,13 +208,12 @@ class Application:
     def setup_logging(self):
 
         logger.remove()
-        logging_directory = "/tmp/nmn"
 
-        if not path.exists(logging_directory):
-            mkdir(logging_directory)
+        if not path.exists(DATA_DIRECTORY):
+            mkdir(DATA_DIRECTORY)
 
-        logger.add(logging_directory + "/debug_{time}.log", rotation="5 MB")
-        logger.add(logging_directory + "/error_{time}.log", level="ERROR", rotation="5 MB")
+        logger.add(DATA_DIRECTORY + "/debug_{time}.log", rotation="5 MB")
+        logger.add(DATA_DIRECTORY + "/error_{time}.log", level="ERROR", rotation="5 MB")
         logger.add(stdout, colorize=True, format="<green>{time}</green> <level>{message}</level>", level="INFO")
 
         logger.info("Starting nmn...")
@@ -182,6 +229,11 @@ class Application:
         signal(SIGINT, self.signal_handler)
         signal(SIGTERM, self.signal_handler)
 
+
+if path.exists(get_notification_command()) is False:
+
+    print("notify-send.sh was not found. Please clone submodules by running `git submodule update --init`")
+    exit(1)
 
 app = Application()
 
