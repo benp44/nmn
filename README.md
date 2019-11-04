@@ -1,6 +1,6 @@
-# nmn (network monitor and notifier)
+## Network Monitor and Notifier (nmn)
 
-Utility that monitors for devices joining and leaving the networks connected to the host, and shows desktop notifications for these events.
+Very simple utility that monitors for devices joining and leaving the networks connected to the host, and optionally shows desktop notifications for these events.
 
 ### How it works
 
