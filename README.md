@@ -1,5 +1,7 @@
 ## Network Monitor and Notifier (nmn)
 
+[![Build Status](https://travis-ci.com/benp44/nmn.svg?branch=master)](https://travis-ci.com/benp44/nmn)
+
 A very simple utility that monitors for devices joining and leaving any/all networks connected to the host, and optionally shows desktop notifications for these events.
 
 ### How it works
