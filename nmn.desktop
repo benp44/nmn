@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=0.1
+Name=Network Monitor and Notifier
+GenericName=Network Monitor and Notifier
+Exec=/home/ben/Development/nmn/nmn
+Terminal=false
+Type=Application
+Categories=Utility;
+StartupNotify=true
